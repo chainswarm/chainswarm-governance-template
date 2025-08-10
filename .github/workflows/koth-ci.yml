@@ -1,0 +1,97 @@
+name: KOTH CI
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+permissions:
+  contents: read
+  pull-requests: write
+env:
+  TZ: Europe/Warsaw
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ---- your project setup (edit for your stack) ----
+      - name: Setup
+        run: echo "install deps here"
+      - name: Build & Test
+        run: echo "run your tests; create coverage/lcov if you have it"
+      - name: Coverage (example placeholder)
+        run: echo '{"delta":0.00,"new_total":0.00}' > coverage.json
+      - name: Lint / Static analysis (example placeholder)
+        run: echo '{"complexity_delta":0.0,"dup_delta":0.0,"lints":0}' > quality.json
+      - name: Optional perf harness
+        if: contains(github.event.pull_request.labels.*.name, 'perf:harness')
+        run: echo '{"latency_ms_delta":0.0,"throughput_delta":0.0}' > koth-bench.json
+      # ---------------------------------------------------
+
+      - name: Extract metadata from PR body
+        id: meta
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.pull_request.body || "";
+            function pick(re, name){ const m = body.match(re); if(!m){ core.setFailed(`Missing ${name} in PR body`); } return m?m[1].trim():''; }
+            const rid = pick(/R-ID:\s*(R-\d{5})/i, "R-ID");
+            const hotkey = pick(/Hotkey.*?:\s*`([^`]+)`/i, "Hotkey");
+            const nonce = pick(/Nonce.*?:\s*`([^`]+)`/i, "Nonce");
+            const sig = pick(/Signature.*?:\s*`([^`]+)`/i, "Signature");
+            core.setOutput('rid', rid);
+            core.setOutput('hotkey', hotkey);
+            core.setOutput('nonce', nonce);
+            core.setOutput('sig', sig);
+
+      - name: Verify hotkey signature (ed25519, SS58)
+        uses: actions/setup-node@v4
+      - run: npm i @polkadot/util-crypto @polkadot/util
+      - run: |
+          node - <<'JS'
+          const {decodeAddress, signatureVerify} = require('@polkadot/util-crypto');
+          const {u8aConcat, u8aToU8a} = require('@polkadot/util');
+          const hotkey = process.env.HOTKEY;
+          const nonce = process.env.NONCE;
+          const sigB64 = process.env.SIG;
+          try {
+            const pub = decodeAddress(hotkey);
+            const msg = u8aConcat(Uint8Array.from(Buffer.from(nonce, 'hex')), u8aToU8a(hotkey));
+            const sig = Uint8Array.from(Buffer.from(sigB64, 'base64'));
+            const ok = signatureVerify(msg, sig, pub).isValid;
+            if(!ok) { console.error('Signature verification failed'); process.exit(1); }
+            console.log('Signature OK');
+          } catch(e) { console.error(e); process.exit(1); }
+          JS
+        env:
+          HOTKEY: ${{ steps.meta.outputs.hotkey }}
+          NONCE:  ${{ steps.meta.outputs.nonce }}
+          SIG:    ${{ steps.meta.outputs.sig }}
+
+      - name: Produce koth-score.json
+        run: |
+          python3 - <<'PY'
+          import json, os, time
+          def read_json(p, default):
+              try:
+                  return json.load(open(p))
+              except Exception:
+                  return default
+          score = {
+            "requirement": "${{ steps.meta.outputs.rid }}",
+            "miner_github": "${{ github.event.pull_request.user.login }}",
+            "hotkey": "${{ steps.meta.outputs.hotkey }}",
+            "spec_checks": {"passed": 1, "total": 1},               # replace with your acceptance checks
+            "coverage": read_json("coverage.json", {"delta":0.0,"new_total":0.0}),
+            "quality":  read_json("quality.json",  {"complexity_delta":0.0,"dup_delta":0.0,"lints":0}),
+            "perf":     read_json("koth-bench.json", {"latency_ms_delta":0.0,"throughput_delta":0.0}),
+            "timely":   {"submitted_at": int(time.time())}
+          }
+          open('koth-score.json','w').write(json.dumps(score, indent=2))
+          PY
+
+      - name: Upload artifact (koth-score)
+        uses: actions/upload-artifact@v4
+        with:
+          name: koth-score
+          path: koth-score.json
