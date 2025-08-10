@@ -1,0 +1,14 @@
+- name: priority:low
+  color: BFD4F2
+- name: priority:med
+  color: 1D76DB
+- name: priority:high
+  color: FBCA04
+- name: priority:critical
+  color: D93F0B
+- name: perf:harness
+  color: 0E8A16
+- name: rolled:next-epoch
+  color: 5319E7
+- name: verified
+  color: 0E8A16
