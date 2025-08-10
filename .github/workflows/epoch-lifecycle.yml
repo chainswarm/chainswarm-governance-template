@@ -1,0 +1,92 @@
+name: Epoch Lifecycle (Warsaw)
+on:
+  schedule: [{ cron: "0 * * * *" }]   # hourly (UTC)
+  workflow_dispatch:
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+env:
+  TZ: Europe/Warsaw
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute Warsaw clock
+        id: clock
+        run: |
+          echo "DAY=$(date +%u)" >> $GITHUB_OUTPUT    # 1..7 Mon..Sun
+          echo "HOUR=$(date +%H)" >> $GITHUB_OUTPUT
+          echo "EPOCH=$(date +%G-W%V)" >> $GITHUB_OUTPUT
+          echo "WEEK_START=$(date -d 'last monday 00:00' +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+          echo "FREEZE=$(date -d 'last friday 18:00' +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+
+      - name: Gate — only run snapshot on Sun 18:00
+        id: gate
+        run: |
+          if [ "${{ steps.clock.outputs.DAY }}" = "7" ] && [ "${{ steps.clock.outputs.HOUR }}" = "18" ]; then
+            echo "ok=true" >> $GITHUB_OUTPUT
+          else
+            echo "ok=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Find merged PRs this ISO week
+        if: steps.gate.outputs.ok == 'true'
+        id: merged
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const org = context.repo.owner, repo = context.repo.repo;
+            const since = "${{ steps.clock.outputs.WEEK_START }}";
+            const prs = await github.paginate(github.rest.pulls.list, {owner:org, repo, state:'closed', per_page:100});
+            const weekPRs = prs.filter(p => p.merged_at && (new Date(p.merged_at) >= new Date(since)));
+            core.setOutput('list', JSON.stringify(weekPRs.map(p => ({number:p.number, sha:p.merge_commit_sha}))));
+
+      - name: Save list to file
+        if: steps.gate.outputs.ok == 'true'
+        run: |
+          mkdir -p snapshots/${{ steps.clock.outputs.EPOCH }}
+          echo '${{ steps.merged.outputs.list }}' | jq '.' > snapshots/${{ steps.clock.outputs.EPOCH }}/index.json
+
+      - name: Download koth-score artifacts for each merged PR
+        if: steps.gate.outputs.ok == 'true'
+        uses: actions/github-script@v7
+        id: matrix
+        with:
+          script: |
+            const items = JSON.parse(`${{ steps.merged.outputs.list }}` || "[]");
+            core.setOutput('numbers', JSON.stringify(items.map(i => i.number)));
+
+      - name: Fetch artifacts (per PR)
+        if: steps.gate.outputs.ok == 'true' && steps.matrix.outputs.numbers != '[]'
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          workflow: koth-ci.yml
+          pr: ${{ fromJson(steps.matrix.outputs.numbers) }}
+          name: koth-score
+          path: /tmp/koth-artifacts
+          if_no_artifact_found: warn
+
+      - name: Collect artifacts into snapshots
+        if: steps.gate.outputs.ok == 'true'
+        run: |
+          mkdir -p snapshots/${{ steps.clock.outputs.EPOCH }}
+          shopt -s globstar || true
+          i=0
+          for f in /tmp/koth-artifacts/**/koth-score.json /tmp/koth-artifacts/koth-score.json; do
+            [ -f "$f" ] || continue
+            # pull PR number from folder name if available
+            prnum=$(echo "$f" | sed -nE 's/.*pr-([0-9]+).*/\1/p')
+            if [ -z "$prnum" ]; then prnum=$((10000+i)); fi
+            cp "$f" "snapshots/${{ steps.clock.outputs.EPOCH }}/pr-${prnum}.json"
+            i=$((i+1))
+          done
+
+      - uses: stefanzweifel/git-auto-commit-action@v5
+        if: steps.gate.outputs.ok == 'true'
+        with:
+          commit_message: "snapshot: ${{ steps.clock.outputs.EPOCH }}"
+          branch: main
