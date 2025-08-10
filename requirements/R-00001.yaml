@@ -1,0 +1,13 @@
+# Minimal requirement metadata used by validator
+title: "Add basic metrics endpoint"
+value: High          # Low | Med | High | Critical
+effort: S            # XS | S | M | L | XL
+perf_enabled: false  # true if a perf harness is defined
+
+# (Optional) Human section for owner/PR guidance:
+acceptance:
+  - "Expose /metrics on port 8080"
+  - "Includes process_cpu_seconds_total, process_resident_memory_bytes"
+  - "Has unit test covering handler returns 200 and at least 2 metrics"
+notes: |
+  This is a sample file. The validator only reads `value`, `effort`, `perf_enabled`.
