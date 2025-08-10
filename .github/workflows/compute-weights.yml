@@ -1,0 +1,27 @@
+name: Compute Weights
+on:
+  schedule: [{ cron: "10 16 * * 0" }]  # 16:10 UTC ~= 18:10 Warsaw on Sundays
+  workflow_dispatch:
+permissions:
+  contents: write
+env:
+  TZ: Europe/Warsaw
+
+jobs:
+  compute:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compute epoch id
+        id: eid
+        run: echo "eid=$(date +%G-W%V)" >> $GITHUB_OUTPUT
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - name: Run validator
+        run: |
+          python3 tools/validator.py --epoch "${{ steps.eid.outputs.eid }}" --tau 0.5
+      - uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "weights: ${{ steps.eid.outputs.eid }}"
+          branch: main
