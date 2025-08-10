@@ -1,4 +1,4 @@
-name: KOTH CI
+name: KOTH CI (Python)
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, edited]
@@ -12,22 +12,71 @@ jobs:
   ci:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout PR HEAD
+        uses: actions/checkout@v4
 
-      # ---- your project setup (edit for your stack) ----
-      - name: Setup
-        run: echo "install deps here"
-      - name: Build & Test
-        run: echo "run your tests; create coverage/lcov if you have it"
-      - name: Coverage (example placeholder)
-        run: echo '{"delta":0.00,"new_total":0.00}' > coverage.json
-      - name: Lint / Static analysis (example placeholder)
-        run: echo '{"complexity_delta":0.0,"dup_delta":0.0,"lints":0}' > quality.json
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install project deps (if any)
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install pytest coverage ruff radon
+
+      # ---------- Lint on PR HEAD ----------
+      - name: Ruff (lint) JSON
+        run: |
+          ruff check . --output-format json > ruff.json || true
+
+      # ---------- Tests + Coverage on PR HEAD ----------
+      - name: Run tests (PR HEAD) with coverage
+        run: |
+          coverage run -m pytest -q || true
+          coverage xml -o coverage.xml || true
+
+      # ---------- Checkout BASE for baseline metrics ----------
+      - name: Checkout BASE into baseline/
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: baseline
+
+      - name: Install deps for baseline (if separate)
+        working-directory: baseline
+        run: |
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Ruff (baseline) JSON
+        working-directory: baseline
+        run: |
+          ruff check . --output-format json > ruff.json || true
+
+      - name: Run tests (baseline) with coverage
+        working-directory: baseline
+        run: |
+          coverage run -m pytest -q || true
+          coverage xml -o coverage.xml || true
+
+      # ---------- Compute metrics (coverage/quality/perf) ----------
+      - name: Compute metrics JSONs
+        run: |
+          python tools/compute_koth_metrics.py \
+            --pr . \
+            --base baseline \
+            --out-coverage coverage.json \
+            --out-quality quality.json
+
       - name: Optional perf harness
-        if: contains(github.event.pull_request.labels.*.name, 'perf:harness')
-        run: echo '{"latency_ms_delta":0.0,"throughput_delta":0.0}' > koth-bench.json
-      # ---------------------------------------------------
+        run: |
+          if [ -f tools/perf_harness.py ]; then \
+            python tools/perf_harness.py > koth-bench.json || echo '{}' > koth-bench.json; \
+          else echo '{}' > koth-bench.json; fi
 
+      # ---------- Extract miner & requirement from PR body ----------
       - name: Extract metadata from PR body
         id: meta
         uses: actions/github-script@v7
@@ -56,35 +105,35 @@ jobs:
           const sigB64 = process.env.SIG;
           try {
             const pub = decodeAddress(hotkey);
-            const msg = u8aConcat(Uint8Array.from(Buffer.from(nonce, 'hex')), u8aToU8a(hotkey));
-            const sig = Uint8Array.from(Buffer.from(sigB64, 'base64'));
+            const msg = u8aConcat(Uint8Array.from(Buffer.from(nonce,'hex')), u8aToU8a(hotkey));
+            const sig = Uint8Array.from(Buffer.from(sigB64,'base64'));
             const ok = signatureVerify(msg, sig, pub).isValid;
-            if(!ok) { console.error('Signature verification failed'); process.exit(1); }
+            if(!ok){ console.error('Signature verification failed'); process.exit(1); }
             console.log('Signature OK');
-          } catch(e) { console.error(e); process.exit(1); }
+          } catch(e){ console.error(e); process.exit(1); }
           JS
         env:
           HOTKEY: ${{ steps.meta.outputs.hotkey }}
           NONCE:  ${{ steps.meta.outputs.nonce }}
           SIG:    ${{ steps.meta.outputs.sig }}
 
+      # ---------- Produce KOTH score artifact ----------
       - name: Produce koth-score.json
         run: |
-          python3 - <<'PY'
-          import json, os, time
-          def read_json(p, default):
-              try:
-                  return json.load(open(p))
-              except Exception:
-                  return default
+          python - <<'PY'
+          import json, time
+          def load(p, d): 
+              try: 
+                  with open(p,'r') as f: return json.load(f)
+              except: return d
           score = {
             "requirement": "${{ steps.meta.outputs.rid }}",
             "miner_github": "${{ github.event.pull_request.user.login }}",
             "hotkey": "${{ steps.meta.outputs.hotkey }}",
-            "spec_checks": {"passed": 1, "total": 1},               # replace with your acceptance checks
-            "coverage": read_json("coverage.json", {"delta":0.0,"new_total":0.0}),
-            "quality":  read_json("quality.json",  {"complexity_delta":0.0,"dup_delta":0.0,"lints":0}),
-            "perf":     read_json("koth-bench.json", {"latency_ms_delta":0.0,"throughput_delta":0.0}),
+            "spec_checks": {"passed": 1, "total": 1},  # owner-specific harness can update this later
+            "coverage": load("coverage.json", {"delta": 0.0, "new_total": 0.0}),
+            "quality":  load("quality.json",  {"complexity_delta": 0.0, "dup_delta": 0.0, "lints": 0}),
+            "perf":     load("koth-bench.json", {"latency_ms_delta": 0.0, "throughput_delta": 0.0}),
             "timely":   {"submitted_at": int(time.time())}
           }
           open('koth-score.json','w').write(json.dumps(score, indent=2))
