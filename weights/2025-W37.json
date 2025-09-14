@@ -1,0 +1,23 @@
+{
+  "epoch": "2025-W37",
+  "tau": 0.5,
+  "value_weights": {
+    "Low": 0.6,
+    "Med": 0.8,
+    "High": 0.95,
+    "Critical": 1.0
+  },
+  "effort_weights": {
+    "XS": 0.7,
+    "S": 0.85,
+    "M": 1.0,
+    "L": 1.2,
+    "XL": 1.5
+  },
+  "service": {
+    "applied_share": 0.0,
+    "hotkey": ""
+  },
+  "miners": [],
+  "scorecards": []
+}
